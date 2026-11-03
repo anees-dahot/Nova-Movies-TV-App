@@ -35,12 +35,12 @@ object SubtitleCleaner {
     fun wrap(url: String): Uri = Uri.parse("$SCHEME://sub?u=" + Uri.encode(url))
 
     /** Data source that resolves novasub:// to a cleaned local file; everything else passes through. */
-    fun factory(ctx: Context, http: OkHttpDataSource.Factory, client: OkHttpClient, headers: Map<String, String>) =
+    fun factory(ctx: Context, http: OkHttpDataSource.Factory, client: OkHttpClient, headers: Map<String, String>, bypassProxy: Boolean = true) =
         ResolvingDataSource.Factory(
             // PNG-disguised video chunks are unwrapped before the HLS extractor sees them
             DataSource.Factory { PngStripDataSource(DefaultDataSource.Factory(ctx, http).createDataSource()) }
         ) { spec: DataSpec ->
-            if (spec.uri.scheme != SCHEME) spec.withUri(StreamExtractor.unwrapProxy(spec.uri))   // also skip slow proxies
+            if (spec.uri.scheme != SCHEME) { if (bypassProxy) spec.withUri(StreamExtractor.unwrapProxy(spec.uri)) else spec }   // skip slow proxies
             else spec.withUri(Uri.fromFile(clean(ctx, spec.uri.getQueryParameter("u") ?: "", client, headers)))
         }
 

@@ -91,6 +91,15 @@ class PlayerActivity : AppCompatActivity() {
     private var loudness: android.media.audiofx.LoudnessEnhancer? = null
     private var boost = 0
     private var audioPicked = false
+    private var nextPrefetched = false
+    private var playPressedAt = 0L
+    private var current: WebStreamSniffer.Sniffed? = null
+    private var bypassedProxy = false
+    private var proxyLastResort: WebStreamSniffer.Sniffed? = null
+    private var sleepJob: Job? = null
+    private var sleepAt = 0L              // elapsedRealtime when the timer fires, 0 = off
+    private var sleepAtEnd = false        // stop when this episode ends
+    private var bandwidthMeter: androidx.media3.exoplayer.upstream.DefaultBandwidthMeter? = null
     private val dubTried = mutableSetOf<String>()
 
     private var streamJob: Job? = null
@@ -120,6 +129,7 @@ class PlayerActivity : AppCompatActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContentView(R.layout.activity_player)
         LocalStore.init(this)
+        Prefetcher.cancelWaiting()
         // Posters from the browse screens aren't needed while watching; free them for the video buffers
         coil.Coil.imageLoader(this).memoryCache?.clear()
 
@@ -164,6 +174,7 @@ class PlayerActivity : AppCompatActivity() {
     // ── Episode start / resume prompt ─────────────────────────────────────────
 
     private fun startEpisode(s: Int, e: Int) {
+        playPressedAt = android.os.SystemClock.elapsedRealtime()
         season = s; episode = e
         providers = StreamExtractor.ordered()
         providerIndex = 0
@@ -171,6 +182,8 @@ class PlayerActivity : AppCompatActivity() {
         introRange = null
         nextEpisode = null
         nextDismissed = false
+        nextPrefetched = false
+        proxyLastResort = null
         listOf(skipBtn, nextBtn, retryBtn, overlay).forEach { it.visibility = View.GONE }
         releasePlayer()
         findViewById<TextView>(R.id.loading_title).text = title()
@@ -193,7 +206,13 @@ class PlayerActivity : AppCompatActivity() {
         streamJob?.cancel()
         streamJob = lifecycleScope.launch {
             showStatus("Finding ${title()}…")
-            if (repo.isBlocked(card)) { showRetry("This title isn't available in Nova TV", retry = false); return@launch }
+            // Family-safe check runs alongside the stream search instead of before it
+            launch {
+                if (repo.isBlocked(card)) {
+                    streamJob?.cancel(); releasePlayer()
+                    showRetry("This title isn't available in Nova TV", retry = false)
+                }
+            }
             target = StreamExtractor.resolveTarget(card, s, e, repo)
             if (target == null) { showRetry("Couldn't match this title to a stream source."); return@launch }
             launch { loadExtras() }
@@ -214,7 +233,13 @@ class PlayerActivity : AppCompatActivity() {
         val t = target ?: return
         while (providerIndex < providers.size) {
             val p = providers[providerIndex]
-            StreamExtractor.cached(p, t)?.let { usedCache = true; play(it); return }
+            StreamExtractor.cached(p, t)?.let { usedCache = true; Log.i(TAG, "instant: cached link for ${p.name}"); play(it); return }
+            // A background search for exactly this may already be running (title page / Continue Watching)
+            Prefetcher.claim(StreamExtractor.embedUrl(p, t))?.let { d ->
+                showStatus("Connecting to ${p.name}…")
+                val r = runCatching { d.await() }.getOrNull()
+                if (r != null) { Log.i(TAG, "instant: joined prefetch for ${p.name}"); StreamExtractor.remember(p, t, r); usedCache = false; play(r); return }
+            }
             val partner = providers.getOrNull(providerIndex + 1)
             showStatus("Connecting to ${p.name}…")
             val won = race(t, p, partner)
@@ -227,8 +252,13 @@ class PlayerActivity : AppCompatActivity() {
             }
             providerIndex += if (partner != null) 2 else 1
         }
+        proxyLastResort?.let { s -> proxyLastResort = null; Log.i(TAG, "last resort: source's own proxy"); play(s, bypassProxy = false); return }
         showRetry("No source answered in time.\nThe box may be busy — Retry usually works.")
     }
+
+    /** "…/api/robot-proxy?url=https://origin/…" → "origin". */
+    private fun originHost(url: String): String? =
+        runCatching { Uri.parse(Uri.parse(url).getQueryParameter("url")).host }.getOrNull()
 
     /**
      * Searches [a]; if it hasn't answered after 12s, also searches [b] in a second hidden page.
@@ -241,7 +271,9 @@ class PlayerActivity : AppCompatActivity() {
             delay(delayMs)
             if (delayMs > 0) showStatus("Still looking… also trying ${p.name}")
             val sn = WebStreamSniffer(this@PlayerActivity, root).also { sniffers += it }
+            val t0 = System.currentTimeMillis()
             val r = try { sn.sniff(StreamExtractor.embedUrl(p, t), p.timeoutMs) } finally { sniffers -= sn }
+            if (r != null) LocalStore.setProviderSpeed(p.name, System.currentTimeMillis() - t0)
             results.send(p to r)
         }
         val jobs = listOfNotNull(search(a, 0), b?.let { search(it, 12_000) })
@@ -287,6 +319,14 @@ class PlayerActivity : AppCompatActivity() {
     /** Player error / stall: re-sniff once if the link was cached, else move on. */
     private fun fallback(reason: String) {
         Log.w(TAG, "source failed: $reason")
+        // Direct-to-origin refused: remember that server, keep this link as a last resort (its proxy
+        // is slow), and move on to the next source first
+        val failed = current
+        if (bypassedProxy && failed != null && reason.contains("HTTP")) {
+            originHost(failed.url)?.let { LocalStore.setDirectBad(it) }
+            proxyLastResort = failed
+        }
+        providers.getOrNull(providerIndex)?.let { dubTried += it.name }   // a failed source isn't a dub candidate
         val t = target
         val p = providers.getOrNull(providerIndex)
         if (t != null && p != null) {
@@ -329,16 +369,21 @@ class PlayerActivity : AppCompatActivity() {
 
     // ── Playback ──────────────────────────────────────────────────────────────
 
-    private fun play(s: WebStreamSniffer.Sniffed) {
+    /**
+     * [bypassProxy]: fetch straight from the origin behind a source's proxy (much faster). Some
+     * origins refuse direct access; then the same link is retried through the proxy (see fallback).
+     */
+    private fun play(s: WebStreamSniffer.Sniffed, bypassProxy: Boolean = true) {
+        current = s
+        val origin = originHost(s.url)
+        bypassedProxy = bypassProxy && s.url.contains("proxy?") && origin != null && !LocalStore.directBad(origin)
         // Stream tokens are often locked to the IP family the WebView used (usually IPv6)
         val preferV6 = tokenPrefersV6(s.url)
-        val client = OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(20, TimeUnit.SECONDS)
+        val client = com.anees.novatv.data.api.RetrofitClient.base.newBuilder()   // shares warm connections
             .dns(object : Dns { override fun lookup(hostname: String) = Dns.SYSTEM.lookup(hostname).sortedBy { if ((it is Inet6Address) == preferV6) 0 else 1 } })
             .build()
         val http = OkHttpDataSource.Factory(client).setUserAgent(s.userAgent).setDefaultRequestProperties(s.headers)
-        val dataSource = SubtitleCleaner.factory(this, http, client, s.headers + ("User-Agent" to s.userAgent))
+        val dataSource = SubtitleCleaner.factory(this, http, client, s.headers + ("User-Agent" to s.userAgent), bypassedProxy)
 
         val subs = s.subtitles.filterNot { SubtitleCleaner.isThumbnailTrack(it) }.take(8).mapIndexed { i, url ->
             MediaItem.SubtitleConfiguration.Builder(SubtitleCleaner.wrap(url))
@@ -355,7 +400,7 @@ class PlayerActivity : AppCompatActivity() {
             .build()
 
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(15_000, 30_000, 2_000, 4_000)
+            .setBufferDurationsMs(15_000, 30_000, 1_000, 3_000)   // start after 1s of video
             .setTargetBufferBytes(24 * 1024 * 1024)
             .setPrioritizeTimeOverSizeThresholds(false)
             .build()
@@ -363,10 +408,17 @@ class PlayerActivity : AppCompatActivity() {
         val selector = androidx.media3.exoplayer.trackselection.DefaultTrackSelector(this).apply {
             setParameters(buildUponParameters().setTunnelingEnabled(settings.lowCpuMode))
         }
-        val exo = ExoPlayer.Builder(this)
+        // Start at the quality the connection really managed last time: no blurry first seconds, no stall
+        val meter = androidx.media3.exoplayer.upstream.DefaultBandwidthMeter.Builder(this)
+            .apply { LocalStore.lastBandwidth().takeIf { it > 0 }?.let { setInitialBitrateEstimate(it) } }
+            .build()
+        bandwidthMeter = meter
+        val renderers = androidx.media3.exoplayer.DefaultRenderersFactory(this).setEnableDecoderFallback(true)
+        val exo = ExoPlayer.Builder(this, renderers)
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSource))
             .setLoadControl(loadControl)
             .setTrackSelector(selector)
+            .setBandwidthMeter(meter)
             .build()
         player = exo
         audioPicked = false
@@ -382,6 +434,7 @@ class PlayerActivity : AppCompatActivity() {
                         readyTimeout?.cancel()
                         buffering.visibility = View.GONE
                         if (loadingLayer.visibility == View.VISIBLE) {
+                            Log.i(TAG, "timing: first frame ${android.os.SystemClock.elapsedRealtime() - playPressedAt}ms after Play")
                             loadingLayer.animate().alpha(0f).setDuration(300).withEndAction { loadingLayer.visibility = View.GONE }.start()
                             showOverlay(3000)
                             matchFrameRate(exo)
@@ -390,7 +443,8 @@ class PlayerActivity : AppCompatActivity() {
                     Player.STATE_BUFFERING -> if (loadingLayer.visibility != View.VISIBLE) buffering.visibility = View.VISIBLE
                     Player.STATE_ENDED -> {
                         saveProgress()
-                        if (nextEpisode != null && settings.autoplayNext) playNext()
+                        if (sleepAtEnd) goToSleep()
+                        else if (nextEpisode != null && settings.autoplayNext) playNext()
                         else if (nextEpisode != null) { nextBtn.text = "▶  Next Episode"; nextBtn.visibility = View.VISIBLE; nextBtn.requestFocus() }
                         else finish()
                     }
@@ -518,7 +572,8 @@ class PlayerActivity : AppCompatActivity() {
         seekBar.secondaryProgress = (p.bufferedPosition * 1000 / dur).toInt()
         timeLeft.text = fmt(pos)
         val remaining = ((dur - pos) / speed).toLong()
-        timeRight.text = "-${fmt(remaining)}   ·   Ends at ${CLOCK.format(Date(System.currentTimeMillis() + remaining))}"
+        val sleep = if (sleepAt > 0) "   ·   💤 ${(sleepAt - android.os.SystemClock.elapsedRealtime()) / 60_000 + 1}m" else if (sleepAtEnd) "   ·   💤 end" else ""
+        timeRight.text = "-${fmt(remaining)}   ·   Ends at ${CLOCK.format(Date(System.currentTimeMillis() + remaining))}$sleep"
     }
 
     private fun startTicker() {
@@ -546,6 +601,11 @@ class PlayerActivity : AppCompatActivity() {
 
                 val next = nextEpisode
                 val remaining = dur - pos
+                // Two minutes before the end, find the next episode's stream so "Next" starts at once
+                if (next != null && !nextPrefetched && remaining in 1..120_000) {
+                    nextPrefetched = true
+                    Prefetcher.request(this@PlayerActivity, card, next.first, next.second, hostOverride = root)
+                }
                 if (next != null && !nextDismissed && remaining in 1..20_000) {
                     nextBtn.text = "▶  Next: S${next.first} · E${next.second}   ${remaining / 1000}s"
                     if (nextBtn.visibility != View.VISIBLE) { nextBtn.visibility = View.VISIBLE; nextBtn.requestFocus() }
@@ -701,6 +761,12 @@ class PlayerActivity : AppCompatActivity() {
             }
         }
 
+        items += ActionSheet.Item("Sleep Timer", header = true)
+        val left = if (sleepAt > 0) (sleepAt - android.os.SystemClock.elapsedRealtime()) / 60_000 else 0
+        items += ActionSheet.Item(if (sleepAt > 0) "On · ${left + 1} min left" else "Off", checked = sleepAt == 0L && !sleepAtEnd) { setSleep(0) }
+        listOf(30, 60, 90).forEach { m -> items += ActionSheet.Item("$m minutes") { setSleep(m) } }
+        items += ActionSheet.Item("End of this ${if (card.type == MediaType.MOVIE) "movie" else "episode"}", checked = sleepAtEnd) { setSleep(-1) }
+
         items += ActionSheet.Item("Volume Boost", header = true)
         listOf("Off", "+6 dB", "+10 dB", "+15 dB").forEachIndexed { i, label ->
             items += ActionSheet.Item(label, checked = boost == i) {
@@ -730,6 +796,27 @@ class PlayerActivity : AppCompatActivity() {
 
         exo.playWhenReady = false
         ActionSheet.show(this, null, items, onDismiss = { player?.playWhenReady = wasPlaying })
+    }
+
+    /** minutes > 0: stop after that long; -1: at the end of this episode; 0: off. */
+    private fun setSleep(minutes: Int) {
+        sleepJob?.cancel()
+        sleepAt = 0; sleepAtEnd = minutes < 0
+        if (minutes > 0) {
+            sleepAt = android.os.SystemClock.elapsedRealtime() + minutes * 60_000L
+            sleepJob = lifecycleScope.launch { delay(minutes * 60_000L); goToSleep() }
+        }
+        android.widget.Toast.makeText(this, when {
+            minutes > 0 -> "Sleep timer: $minutes minutes"
+            minutes < 0 -> "Will stop at the end"
+            else -> "Sleep timer off"
+        }, android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    private fun goToSleep() {
+        saveProgress()
+        player?.pause()
+        finish()
     }
 
     private fun trackName(f: Format, fallback: String): String {
@@ -782,6 +869,7 @@ class PlayerActivity : AppCompatActivity() {
         guessLang(url)?.let { Locale(it).displayLanguage } ?: if (i == 0) "English" else "Subtitles ${i + 1}"
 
     private fun releasePlayer() {
+        bandwidthMeter?.bitrateEstimate?.takeIf { it > 300_000 }?.let { LocalStore.setLastBandwidth(it) }
         loudness?.release()
         loudness = null
         readyTimeout?.cancel()
@@ -804,6 +892,7 @@ class PlayerActivity : AppCompatActivity() {
         super.onDestroy()
         streamJob?.cancel()
         sniffers.toList().forEach { it.release() }
+        Prefetcher.cancel()
         releasePlayer()
         if (settings.matchFrameRate) window.attributes = window.attributes.apply { preferredDisplayModeId = originalModeId }
     }

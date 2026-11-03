@@ -80,6 +80,29 @@ object LocalStore {
     fun noDub(key: String, lang: String) = prefs.getBoolean("nodub_${key}_$lang", false)
     fun setNoDub(key: String, lang: String) = prefs.edit().putBoolean("nodub_${key}_$lang", true).apply()
 
+    /** Last measured network speed (bits/s), used as the player's starting estimate. */
+    fun lastBandwidth(): Long = prefs.getLong("bw", 0)
+    fun setLastBandwidth(bps: Long) = prefs.edit().putLong("bw", bps).apply()
+
+    /** Found stream links: embed URL → (time, JSON). Keeps the newest 40. */
+    fun stream(key: String): Pair<Long, String>? {
+        val all = streams()
+        return all[key]?.let { it.first to it.second }
+    }
+
+    fun saveStream(key: String, json: String?) {
+        val all = streams().toMutableMap()
+        if (json == null) all.remove(key) else all[key] = System.currentTimeMillis() to json
+        val newest = all.entries.sortedByDescending { it.value.first }.take(40).associate { it.key to it.value }
+        prefs.edit().putString("streams", gson.toJson(newest.mapValues { listOf(it.value.first.toString(), it.value.second) })).apply()
+    }
+
+    private fun streams(): Map<String, Pair<Long, String>> = runCatching {
+        val type = object : TypeToken<Map<String, List<String>>>() {}.type
+        gson.fromJson<Map<String, List<String>>>(prefs.getString("streams", null) ?: return emptyMap(), type)
+            .mapValues { it.value[0].toLong() to it.value[1] }
+    }.getOrDefault(emptyMap())
+
     // ── Recent searches ───────────────────────────────────────────────────────
 
     fun recentSearches(): List<String> = read("recent_q", object : TypeToken<List<String>>() {})
@@ -89,10 +112,26 @@ object LocalStore {
         write("recent_q", (listOf(t) + recentSearches().filterNot { it.equals(t, true) }).take(10))
     }
 
+    fun skippedUpdate(): String? = prefs.getString("skip_update", null)
+    fun setSkippedUpdate(v: String) = prefs.edit().putString("skip_update", v).apply()
+
+    /** Origin servers that refused direct access (must go through the source's proxy). */
+    fun directBad(host: String) = prefs.getBoolean("direct_bad_$host", false)
+    fun setDirectBad(host: String) = prefs.edit().putBoolean("direct_bad_$host", true).apply()
+
+    // ── Remote sources.json ───────────────────────────────────────────────────
+
+    fun remoteSources(): String? = prefs.getString("remote_sources", null)
+    fun saveRemoteSources(json: String) = prefs.edit().putString("remote_sources", json).apply()
+
     // ── Provider health ───────────────────────────────────────────────────────
 
     /** +3 per success, -1 per failure, clamped; VidSrc starts ahead because it's the most reliable. */
     fun providerScore(name: String): Int = prefs.getInt("prov_$name", if (name == "VidSrc") 10 else 0)
+
+    /** How long the last successful search took (ms), for Settings → Sources. */
+    fun providerSpeed(name: String): Long = prefs.getLong("prov_ms_$name", 0)
+    fun setProviderSpeed(name: String, ms: Long) = prefs.edit().putLong("prov_ms_$name", ms).apply()
 
     fun reportProvider(name: String, ok: Boolean) =
         prefs.edit().putInt("prov_$name", (providerScore(name) + if (ok) 3 else -1).coerceIn(-10, 20)).apply()

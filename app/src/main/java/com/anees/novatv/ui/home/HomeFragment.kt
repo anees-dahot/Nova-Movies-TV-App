@@ -52,6 +52,7 @@ class HomeFragment : Fragment(), RowCallbacks, TabPage {
     private var pinTop = 0
     private val repo = com.anees.novatv.data.repository.MediaRepository()
     private var infoJob: Job? = null
+    private var topPrefetched = false
 
     companion object {
         fun newInstance(tabIndex: Int) = HomeFragment().apply { arguments = Bundle().apply { putInt("tab", tabIndex) } }
@@ -83,6 +84,7 @@ class HomeFragment : Fragment(), RowCallbacks, TabPage {
 
         viewModel.homeData.observe(viewLifecycleOwner) { render() }
         viewModel.genreRows.observe(viewLifecycleOwner) { if (tabIndex == 1 || tabIndex == 2) render() }
+        viewModel.trending.observe(viewLifecycleOwner) { if (tabIndex == 0) render() }
         viewModel.load()
         if (tabIndex == 1) viewModel.loadGenres(MediaType.MOVIE)
         if (tabIndex == 2) viewModel.loadGenres(MediaType.SERIES)
@@ -195,10 +197,34 @@ class HomeFragment : Fragment(), RowCallbacks, TabPage {
                 subtitles = history.map { h -> if (h.card.type == MediaType.MOVIE) remaining(h.durationMs - h.positionMs) else "S${h.season} · E${h.episode}" })
             val list = LocalStore.watchlist()
             if (list.isNotEmpty()) items += HomeItem.Row("mylist", "My List", list)
+            viewModel.trending.value?.take(10)?.takeIf { it.size >= 5 }?.let {
+                items += HomeItem.Row("top10", "Top 10 Today", it, ranked = true)
+            }
         }
         content.forEach { (title, cards) -> items += HomeItem.Row(title, title, cards) }
-        adapter.submitList(items)
+
+        // Data can arrive while the user is browsing (fresh rows, Top 10): keep focus on the same card
+        val focusedItem = view?.findFocus()?.let { rows.findContainingItemView(it) }
+        val focusedRowKey = focusedItem?.let { (adapter.currentList.getOrNull(rows.getChildAdapterPosition(it)) as? HomeItem.Row)?.key }
+        val focusedCard = focusedItem?.findViewById<RecyclerView>(R.id.row_list)?.let { list ->
+            list.findFocus()?.let { list.findContainingItemView(it) }?.let { list.getChildAdapterPosition(it) }
+        }
+        adapter.submitList(items) {
+            if (focusedRowKey == null || focusedCard == null || focusedCard < 0) return@submitList
+            val pos = adapter.currentList.indexOfFirst { it.key == focusedRowKey }
+            if (pos < 0) return@submitList
+            val stillThere = view?.findFocus()?.let { rows.findContainingItemView(it) }?.let { rows.getChildAdapterPosition(it) } == pos
+            if (!stillThere) rows.post {
+                rows.findViewHolderForAdapterPosition(pos)?.itemView?.findViewById<RecyclerView>(R.id.row_list)
+                    ?.findViewHolderForAdapterPosition(focusedCard)?.itemView?.requestFocus()
+            }
+        }
         if (heroCard == null) featured.firstOrNull()?.let { setHero(it) }
+        // The most likely next press: resume the top Continue Watching item. Ready it after Home settles.
+        if (tabIndex == 0 && !topPrefetched) LocalStore.history().firstOrNull()?.let { h ->
+            topPrefetched = true
+            com.anees.novatv.ui.player.Prefetcher.request(requireContext(), h.card, h.season, h.episode, delayMs = 5000)
+        }
     }
 
     private fun remaining(ms: Long) = "${(ms / 60_000).coerceAtLeast(1)} min left"
@@ -235,6 +261,10 @@ class HomeFragment : Fragment(), RowCallbacks, TabPage {
     override fun onCardFocused(card: MediaCard) {
         lastCardFocus = System.currentTimeMillis()
         setInfo(card)
+        // Continue Watching card resting in focus ~1s: get its stream ready
+        LocalStore.historyFor(card)?.takeIf { tabIndex == 0 }?.let { h ->
+            com.anees.novatv.ui.player.Prefetcher.request(requireContext(), h.card, h.season, h.episode, delayMs = 1000)
+        }
         backdropJob?.cancel()
         backdropJob = viewLifecycleOwner.lifecycleScope.launch {
             delay(350) // only when focus rests: fast D-pad scrolling never decodes images

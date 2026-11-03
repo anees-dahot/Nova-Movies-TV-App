@@ -17,6 +17,12 @@
             android:textSize="8sp" android:textColor="@color/nova_white"
             android:fontFamily="sans-serif-medium" android:letterSpacing="0.08"
             android:paddingStart="6dp" android:paddingEnd="6dp" android:paddingTop="2dp" android:paddingBottom="2dp"/>
+        <TextView android:id="@+id/card_rank"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_gravity="bottom|start" android:layout_marginStart="4dp" android:layout_marginBottom="-14dp"
+            android:textSize="64sp" android:textColor="#FFFFFFFF" android:fontFamily="sans-serif-black"
+            android:shadowColor="#E6000000" android:shadowRadius="10" android:shadowDx="0" android:shadowDy="0"
+            android:includeFontPadding="false" android:visibility="gone"/>
         <TextView android:id="@+id/card_lang"
             android:layout_width="wrap_content" android:layout_height="wrap_content"
             android:layout_gravity="bottom|start" android:layout_margin="6dp"

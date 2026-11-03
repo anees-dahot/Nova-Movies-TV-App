@@ -8,7 +8,17 @@ import java.util.concurrent.TimeUnit
 
 object RetrofitClient {
 
-    private val httpClient = OkHttpClient.Builder()
+    /**
+     * One connection pool for everything (metadata, sniffing, video): reused warm connections
+     * skip the TLS handshake on every play. No interceptors here, so stream requests keep the
+     * WebView's own User-Agent.
+     */
+    val base: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .build()
+
+    private val httpClient = base.newBuilder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
         .addInterceptor { chain ->

@@ -75,8 +75,10 @@ class DetailFragment : Fragment() {
             }
         }
         playBtn.requestFocus()
-        // Warm up the WebView engine while the user reads; the first source search then starts ~2s faster
-        view.postDelayed({ context?.let { runCatching { android.webkit.WebSettings.getDefaultUserAgent(it) } } }, 600)
+        // Instant Play: find the stream for the episode Play would start, while the user reads
+        view.postDelayed({
+            context?.let { com.anees.novatv.ui.player.Prefetcher.request(it, card, season, episode) }
+        }, 600)
 
         // Enrich with full details (runtime, genres, seasons, episodes)
         viewLifecycleOwner.lifecycleScope.launch {
@@ -107,6 +109,11 @@ class DetailFragment : Fragment() {
                 }
             }
         }
+    }
+
+    override fun onDestroyView() {
+        com.anees.novatv.ui.player.Prefetcher.cancel()
+        super.onDestroyView()
     }
 
     override fun onResume() {
@@ -233,7 +240,7 @@ class DetailFragment : Fragment() {
                 }
                 frame.clipToOutline = true
                 v.setOnFocusChangeListener { x, has ->
-                    x.animate().scaleX(if (has) 1.08f else 1f).scaleY(if (has) 1.08f else 1f).setDuration(150).start()
+                    x.animate().scaleX(if (has) 1.08f else 1f).scaleY(if (has) 1.08f else 1f).setDuration(150).withLayer().start()
                 }
                 v.setOnClickListener { bindingAdapterPosition.takeIf { it != RecyclerView.NO_POSITION }?.let { onClick(eps[it]) } }
             }

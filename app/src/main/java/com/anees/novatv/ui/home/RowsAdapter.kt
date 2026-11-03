@@ -24,7 +24,8 @@ sealed class HomeItem {
         val cards: List<MediaCard>,
         val wide: Boolean = false,
         val progress: List<Float>? = null,
-        val subtitles: List<String?>? = null
+        val subtitles: List<String?>? = null,
+        val ranked: Boolean = false
     ) : HomeItem()
 }
 
@@ -88,7 +89,7 @@ class RowsAdapter(private val cb: RowCallbacks) : ListAdapter<HomeItem, Recycler
         fun bind(row: HomeItem.Row) {
             key = row.key
             title.text = row.title
-            list.adapter = MediaCardAdapter(row.cards, row.progress, row.subtitles, row.wide,
+            list.adapter = MediaCardAdapter(row.cards, row.progress, row.subtitles, row.wide, row.ranked,
                 onFocus = cb::onCardFocused,
                 onLongClick = { i, c -> cb.onCardLongClick(row, i, c) },
                 onClick = { i, c -> cb.onCardClick(row, i, c) })

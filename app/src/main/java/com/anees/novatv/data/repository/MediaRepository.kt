@@ -181,7 +181,7 @@ class MediaRepository {
         year = (releaseDate ?: firstAirDate ?: "").take(4),
         rating = voteAverage,
         type = if (mediaType == "tv") MediaType.SERIES else MediaType.MOVIE,
-        lang = originalLanguage
+        lang = originalLanguage, released = (releaseDate ?: firstAirDate)?.ifEmpty { null }
     )
 
     // 18+ safety net on top of include_adult=false / isAdult:false at the API level

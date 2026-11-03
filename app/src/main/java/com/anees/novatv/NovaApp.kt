@@ -13,6 +13,8 @@ class NovaApp : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
         LocalStore.init(this)
+        // Latest source list from GitHub: dead sources get replaced without reinstalling the app
+        Thread { com.anees.novatv.ui.player.StreamExtractor.refreshRemote() }.start()
     }
 
     override fun newImageLoader(): ImageLoader = ImageLoader.Builder(this)

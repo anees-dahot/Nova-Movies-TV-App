@@ -3,6 +3,10 @@
     android:layout_width="match_parent" android:layout_height="match_parent"
     android:background="@color/nova_black">
 
+    <!-- Hidden host for background stream searches (Instant Play); drawn under the opaque UI -->
+    <FrameLayout android:id="@+id/sniff_host"
+        android:layout_width="match_parent" android:layout_height="match_parent" />
+
     <LinearLayout android:id="@+id/main_content"
         android:layout_width="match_parent" android:layout_height="match_parent"
         android:orientation="vertical">

@@ -11,6 +11,8 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.fragment.app.Fragment
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 import com.anees.novatv.BuildConfig
 import com.anees.novatv.R
 import com.anees.novatv.data.local.LocalStore
@@ -59,6 +61,8 @@ class SettingsFragment : Fragment(), TabPage {
         row("Match Frame Rate", if (s.matchFrameRate) "On" else "Off") { save(s.copy(matchFrameRate = !s.matchFrameRate)) }
         row("Low-CPU Playback", if (s.lowCpuMode) "On" else "Off") { save(s.copy(lowCpuMode = !s.lowCpuMode)) }
         note("Match Frame Rate switches the TV to 24Hz for films (less judder). Low-CPU Playback is smoother on this box but some streams may not start — turn it off if that happens.")
+        header("Streaming")
+        row("Sources", "${com.anees.novatv.ui.player.StreamExtractor.PROVIDERS.size} active") { showSources() }
         header("Library")
         row("Clear Watch History", "") {
             ActionSheet.show(requireContext(), "Clear watch history?", listOf(
@@ -68,7 +72,40 @@ class SettingsFragment : Fragment(), TabPage {
         }
         header("About")
         row("Version", BuildConfig.VERSION_NAME) {}
+        row("Check for Updates", "") { com.anees.novatv.update.Updater.check(requireActivity(), viewLifecycleOwner.lifecycleScope, manual = true) }
         row("Content", "Family-safe (18+ removed)") {}
+    }
+
+    /** Each source: health score and last search time; plus a live test on a known film. */
+    private fun showSources() {
+        val ctx = requireContext()
+        val items = com.anees.novatv.ui.player.StreamExtractor.ordered().map { p ->
+            val ms = LocalStore.providerSpeed(p.name)
+            val score = LocalStore.providerScore(p.name)
+            val health = when { score >= 10 -> "●"; score >= 0 -> "◐"; else -> "○" }
+            ActionSheet.Item("$health  ${p.name}${if (p.multiAudio) "  · multi-audio" else ""}${if (ms > 0) "  · ${"%.1f".format(ms / 1000f)}s" else ""}")
+        } + ActionSheet.Item("▶  Test all sources now") { testSources() }
+        ActionSheet.show(ctx, "Sources", items, subtitle = "● working  ◐ unsure  ○ failing   ·   list updates from GitHub")
+    }
+
+    private fun testSources() {
+        val host = com.anees.novatv.ui.player.Prefetcher.host ?: return
+        val ctx = requireContext()
+        val target = com.anees.novatv.ui.player.StreamExtractor.Target(27205, true, 0, 0)   // Inception
+        android.widget.Toast.makeText(ctx, "Testing sources… (about a minute)", android.widget.Toast.LENGTH_SHORT).show()
+        viewLifecycleOwner.lifecycleScope.launch {
+            val results = mutableListOf<String>()
+            for (p in com.anees.novatv.ui.player.StreamExtractor.PROVIDERS) {
+                val t0 = System.currentTimeMillis()
+                val r = com.anees.novatv.ui.player.WebStreamSniffer(ctx, host)
+                    .sniff(com.anees.novatv.ui.player.StreamExtractor.embedUrl(p, target), p.timeoutMs)
+                val ms = System.currentTimeMillis() - t0
+                LocalStore.reportProvider(p.name, r != null)
+                if (r != null) LocalStore.setProviderSpeed(p.name, ms)
+                results += (if (r != null) "✓  ${p.name}  ${"%.1f".format(ms / 1000f)}s" else "✗  ${p.name}")
+            }
+            if (isAdded) ActionSheet.show(requireContext(), "Test results", results.map { ActionSheet.Item(it) })
+        }
     }
 
     private fun save(s: Settings) {

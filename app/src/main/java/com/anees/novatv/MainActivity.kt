@@ -9,6 +9,7 @@ import android.view.View
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
 import androidx.fragment.app.Fragment
 import com.anees.novatv.data.model.MediaCard
 import com.anees.novatv.ui.common.TabPage
@@ -48,6 +49,11 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
         tabBar = findViewById(R.id.tab_bar)
         mainContent = findViewById(R.id.main_content)
+        com.anees.novatv.ui.player.Prefetcher.host = findViewById(R.id.sniff_host)
+        // Warm the web engine once the UI has settled, so the first stream search starts ~1-2s sooner
+        handler.postDelayed({ runCatching { android.webkit.WebSettings.getDefaultUserAgent(this) } }, 4000)
+        // New version on GitHub? Offer it once the home screen has settled
+        if (savedInstanceState == null) handler.postDelayed({ com.anees.novatv.update.Updater.check(this, lifecycleScope) }, 8000)
 
         val bar = findViewById<LinearLayout>(R.id.tab_bar)
         val dp = resources.displayMetrics.density
@@ -148,6 +154,7 @@ class MainActivity : AppCompatActivity() {
 
     /** Opens a detail screen above the tabs; Back returns to the same tab, row and card. */
     fun openDetail(card: MediaCard) {
+        com.anees.novatv.ui.player.Prefetcher.cancel()
         supportFragmentManager.beginTransaction()
             .setCustomAnimations(R.anim.detail_in, android.R.anim.fade_out, android.R.anim.fade_in, R.anim.detail_out)
             .add(R.id.detail_container, DetailFragment.newInstance(card))

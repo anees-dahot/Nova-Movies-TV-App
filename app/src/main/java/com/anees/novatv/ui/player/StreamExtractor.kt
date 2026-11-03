@@ -22,7 +22,8 @@ object StreamExtractor {
     /** What to ask providers for: always a TMDB id, movie or tv episode. */
     data class Target(val tmdbId: Int, val isMovie: Boolean, val season: Int, val episode: Int, val malId: Int? = null)
 
-    val PROVIDERS = listOf(
+    /** Built-in list, used until (or if) the remote sources.json from GitHub loads. */
+    val BUILT_IN = listOf(
         // Nov 2026 test: one HLS stream with many dubs (e.g. Inception: English, Hindi, Telugu, Arabic…), found in ~3s
         Provider("VidLux", { "https://vidlux.xyz/embed/movie/$it" }, { id, s, e -> "https://vidlux.xyz/embed/tv/$id/$s/$e" }, 20_000, multiAudio = true),
         // Backup with real dubs (Nov 2026): Vidly had Hindi + 6 more on Loki where VidLux had no Hindi
@@ -37,6 +38,39 @@ object StreamExtractor {
         Provider("VidFast", { "https://vidfast.pro/movie/$it?autoPlay=true" }, { id, s, e -> "https://vidfast.pro/tv/$id/$s/$e?autoPlay=true" }),
     )
 
+    /** Remote list (sources.json in the GitHub repo) if available, else the built-in one. */
+    val PROVIDERS: List<Provider> get() = remote() ?: BUILT_IN
+
+    private var remoteCache: Pair<String, List<Provider>>? = null
+
+    private fun remote(): List<Provider>? {
+        val json = com.anees.novatv.data.local.LocalStore.remoteSources() ?: return null
+        remoteCache?.let { if (it.first == json) return it.second }
+        return runCatching {
+            val arr = org.json.JSONObject(json).getJSONArray("sources")
+            (0 until arr.length()).map { arr.getJSONObject(it) }.filter { it.optBoolean("enabled", true) }.map { o ->
+                val movie = o.getString("movie"); val tv = o.getString("tv")
+                Provider(o.getString("name"),
+                    { id -> movie.replace("{id}", id.toString()) },
+                    { id, s, e -> tv.replace("{id}", id.toString()).replace("{s}", s.toString()).replace("{e}", e.toString()) },
+                    o.optLong("timeoutMs", 15_000), o.optBoolean("multiAudio", false))
+            }.takeIf { it.isNotEmpty() }
+        }.getOrNull()?.also { remoteCache = json to it }
+    }
+
+    /** Fetch the latest sources.json (called at app start, off the main thread). */
+    fun refreshRemote() {
+        runCatching {
+            val req = okhttp3.Request.Builder().url(REMOTE_URL).header("Cache-Control", "no-cache").build()
+            com.anees.novatv.data.api.RetrofitClient.base.newCall(req).execute().use { r ->
+                val body = r.body?.string()
+                if (r.isSuccessful && body != null && org.json.JSONObject(body).has("sources"))
+                    com.anees.novatv.data.local.LocalStore.saveRemoteSources(body)
+            }
+        }
+    }
+    private const val REMOTE_URL = "https://raw.githubusercontent.com/anees-dahot/Nova-Movies-TV-App/main/sources.json"
+
     /** Providers that worked recently go first; ones that keep failing sink to the end. */
     fun ordered(): List<Provider> {
         // Wanting a dub (not "Original") puts multi-audio sources first, whatever their score
@@ -47,12 +81,34 @@ object StreamExtractor {
         )
     }
 
-    /** Sniffed streams stay valid for hours; reuse them for retries, resume and source switches. */
+    /**
+     * Found links stay valid for hours: keep them in memory and on disk (2h), so retries, source
+     * switches, prefetches and Resume after an app restart skip the search entirely.
+     */
+    private const val TTL = 2 * 60 * 60_000L
     private val cache = HashMap<String, Pair<Long, WebStreamSniffer.Sniffed>>()
-    fun cached(p: Provider, t: Target): WebStreamSniffer.Sniffed? =
-        cache[embedUrl(p, t)]?.takeIf { System.currentTimeMillis() - it.first < 60 * 60_000 }?.second
-    fun remember(p: Provider, t: Target, s: WebStreamSniffer.Sniffed) { cache[embedUrl(p, t)] = System.currentTimeMillis() to s }
-    fun forget(p: Provider, t: Target) { cache.remove(embedUrl(p, t)) }
+    private val gson = com.google.gson.Gson()
+
+    fun cached(p: Provider, t: Target): WebStreamSniffer.Sniffed? {
+        val key = embedUrl(p, t)
+        cache[key]?.let { (at, s) -> if (System.currentTimeMillis() - at < TTL) return s }
+        return com.anees.novatv.data.local.LocalStore.stream(key)?.let { (at, json) ->
+            if (System.currentTimeMillis() - at >= TTL) null
+            else runCatching { gson.fromJson(json, WebStreamSniffer.Sniffed::class.java) }.getOrNull()?.also { cache[key] = at to it }
+        }
+    }
+
+    fun remember(p: Provider, t: Target, s: WebStreamSniffer.Sniffed) {
+        val key = embedUrl(p, t)
+        cache[key] = System.currentTimeMillis() to s
+        com.anees.novatv.data.local.LocalStore.saveStream(key, gson.toJson(s))
+    }
+
+    fun forget(p: Provider, t: Target) {
+        val key = embedUrl(p, t)
+        cache.remove(key)
+        com.anees.novatv.data.local.LocalStore.saveStream(key, null)
+    }
 
     /**
      * Some providers wrap every playlist/segment in a slow proxy (`…/api/robot-proxy?url=<real>`).

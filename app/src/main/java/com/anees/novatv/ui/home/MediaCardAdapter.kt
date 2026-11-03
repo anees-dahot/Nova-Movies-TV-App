@@ -23,6 +23,7 @@ class MediaCardAdapter(
     private val progress: List<Float>? = null,
     private val subtitles: List<String?>? = null,
     private val wide: Boolean = false,
+    private val ranked: Boolean = false,
     private val onFocus: (MediaCard) -> Unit = {},
     private val onLongClick: ((Int, MediaCard) -> Unit)? = null,
     private val onClick: (Int, MediaCard) -> Unit
@@ -36,6 +37,7 @@ class MediaCardAdapter(
         val badge: TextView = view.findViewById(R.id.card_badge)
         val bar: ProgressBar = view.findViewById(R.id.card_progress)
         val lang: TextView = view.findViewById(R.id.card_lang)
+        val rank: TextView = view.findViewById(R.id.card_rank)
 
         init {
             val radius = 10f * view.resources.displayMetrics.density
@@ -44,7 +46,7 @@ class MediaCardAdapter(
             }
             frame.clipToOutline = true
             view.setOnFocusChangeListener { v, has ->
-                v.animate().scaleX(if (has) 1.1f else 1f).scaleY(if (has) 1.1f else 1f).setDuration(150).start()
+                v.animate().scaleX(if (has) 1.1f else 1f).scaleY(if (has) 1.1f else 1f).setDuration(150).withLayer().start()
                 title.alpha = if (has) 1f else 0.7f
                 val pos = bindingAdapterPosition
                 if (has && pos != RecyclerView.NO_POSITION) onFocus(items[pos])
@@ -74,14 +76,28 @@ class MediaCardAdapter(
             if (card.rating > 0) append("  ★ ${"%.1f".format(card.rating)}")
         }
         holder.badge.visibility = if (wide) View.GONE else View.VISIBLE
-        holder.badge.text = when (card.type) { MediaType.MOVIE -> "MOVIE"; MediaType.SERIES -> "SERIES"; MediaType.ANIME -> "ANIME" }
+        val fresh = isNew(card.released)
+        holder.badge.text = if (fresh) "NEW" else when (card.type) { MediaType.MOVIE -> "MOVIE"; MediaType.SERIES -> "SERIES"; MediaType.ANIME -> "ANIME" }
+        holder.badge.setBackgroundResource(if (fresh) R.drawable.badge_new else R.drawable.badge_pill)
+        holder.rank.visibility = if (ranked) View.VISIBLE else View.GONE
+        holder.rank.text = (position + 1).toString()
         val tag = LangTags.label(card, LocalStore.audioLangs("${card.type}:${card.id}"))
         holder.lang.text = tag?.uppercase()
-        holder.lang.visibility = if (tag != null && progress == null) View.VISIBLE else View.GONE
+        holder.lang.visibility = if (tag != null && progress == null && !ranked) View.VISIBLE else View.GONE
         val p = progress?.getOrNull(position)
         holder.bar.visibility = if (p != null && p > 0f) View.VISIBLE else View.GONE
         holder.bar.progress = ((p ?: 0f) * 1000).toInt()
     }
+}
+
+/** Released within the last 14 days (and not in the future). */
+private fun isNew(date: String?): Boolean {
+    if (date == null || date.length < 10) return false
+    return runCatching {
+        val d = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).parse(date.take(10))!!.time
+        val age = System.currentTimeMillis() - d
+        age in 0..14L * 24 * 3600 * 1000
+    }.getOrDefault(false)
 }
 
 /** Columns that fit 132dp cards (+16dp gap) in the given width (dp). */

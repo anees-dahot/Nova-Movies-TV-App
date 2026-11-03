@@ -57,15 +57,19 @@ class WebStreamSniffer(private val ctx: Context, private val host: FrameLayout) 
                         requests++
                         if (isBlocked(lower)) return EMPTY()
 
-                        if (SUB_RE.containsMatchIn(lower)) subs.add(url)
+                        if (SUB_RE.containsMatchIn(lower)) {
+                            subs.add(url)
+                            // Stream already found and waiting only for subtitles: done now
+                            hit?.let { h -> main.post { finish(h.copy(subtitles = subs.toList())) } }
+                        }
 
-                        if (hit == null && MEDIA_RE.containsMatchIn(lower) && !isBlocked(lower)) {
+                        if (hit == null && MEDIA_RE.containsMatchIn(lower) && !isBlocked(lower) && !AD_VIDEO_RE.containsMatchIn(lower)) {
                             val referer = req.requestHeaders["Referer"] ?: req.requestHeaders["referer"] ?: embedUrl
                             val origin = Uri.parse(referer).let { "${it.scheme}://${it.host}" }
                             hit = Sniffed(url, mapOf("Referer" to referer, "Origin" to origin), ua, emptyList())
                             Log.i(TAG, "captured from $embedHost: ${url.take(100)}")
-                            // Give the player a moment to request its subtitle files, then stop
-                            main.postDelayed({ finish(hit!!.copy(subtitles = subs.toList())) }, 1500)
+                            // Wait at most 0.5s for subtitle files (was a fixed 1.5s); a subtitle arriving ends it sooner
+                            main.postDelayed({ finish(hit!!.copy(subtitles = subs.toList())) }, 500)
                         }
                         return null
                     }
@@ -96,7 +100,7 @@ class WebStreamSniffer(private val ctx: Context, private val host: FrameLayout) 
                         main.postDelayed(this, 2500)
                     }
                 }
-                main.postDelayed(tapper, 3000)
+                main.postDelayed(tapper, 1500)
 
                 cont.invokeOnCancellation {
                     main.removeCallbacks(tapper)
@@ -152,6 +156,8 @@ class WebStreamSniffer(private val ctx: Context, private val host: FrameLayout) 
         private const val TAG = "NovaTV"
         private val MEDIA_RE = Regex("""\.m3u8|\.mp4(\?|$)""")
         private val SUB_RE = Regex("""\.(vtt|srt)(\?|$)""")
+        /** Ad / preroll videos that some players load before the real stream. */
+        private val AD_VIDEO_RE = Regex("""interstitial|preroll|/vast|vast\.|/ads?/|[_-]ad[_-]|demo-video|gambling""")
         private val IMG_RE = Regex("""\.(png|jpe?g|gif|webp|svg|ico|woff2?|ttf)(\?|$)""")
         private val BLOCK = listOf(
             "doubleclick", "googlesyndication", "adservice", "google-analytics", "googletagmanager",

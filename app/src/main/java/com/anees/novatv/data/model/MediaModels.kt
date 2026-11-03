@@ -119,7 +119,8 @@ data class MediaCard(
     val genres: String = "",
     val totalSeasons: Int? = null,
     val episodes: Int? = null,
-    val lang: String? = null              // original language (ISO 639-1)
+    val lang: String? = null,             // original language (ISO 639-1)
+    val released: String? = null          // yyyy-MM-dd, for NEW badges
 )
 
 fun TmdbMovie.toCard() = MediaCard(
@@ -130,7 +131,7 @@ fun TmdbMovie.toCard() = MediaCard(
     year = releaseDate.take(4), rating = voteAverage,
     type = MediaType.MOVIE, runtime = runtime,
     genres = genres?.joinToString(" · ") { it.name } ?: GenreNames.of(genreIds),
-    lang = originalLanguage
+    lang = originalLanguage, released = releaseDate.ifEmpty { null }
 )
 
 fun TmdbSeries.toCard() = MediaCard(
@@ -140,7 +141,7 @@ fun TmdbSeries.toCard() = MediaCard(
     backdropUrl = backdropPath?.let { "https://image.tmdb.org/t/p/w780$it" },
     year = firstAirDate.take(4), rating = voteAverage,
     type = MediaType.SERIES, totalSeasons = numberOfSeasons,
-    genres = GenreNames.of(genreIds), lang = originalLanguage
+    genres = GenreNames.of(genreIds), lang = originalLanguage, released = firstAirDate.ifEmpty { null }
 )
 
 fun AniMedia.toCard() = MediaCard(
