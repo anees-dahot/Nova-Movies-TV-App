@@ -76,6 +76,10 @@ object LocalStore {
     fun audioLangs(key: String): List<String>? = prefs.getString("langs_$key", null)?.split(",")?.filter { it.isNotBlank() }
     fun setAudioLangs(key: String, langs: List<String>) = prefs.edit().putString("langs_$key", langs.joinToString(",")).apply()
 
+    /** Remembers "no source had a Hindi dub for this title", so the dub search isn't repeated. */
+    fun noDub(key: String, lang: String) = prefs.getBoolean("nodub_${key}_$lang", false)
+    fun setNoDub(key: String, lang: String) = prefs.edit().putBoolean("nodub_${key}_$lang", true).apply()
+
     // ── Recent searches ───────────────────────────────────────────────────────
 
     fun recentSearches(): List<String> = read("recent_q", object : TypeToken<List<String>>() {})

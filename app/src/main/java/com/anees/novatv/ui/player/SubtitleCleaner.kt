@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.util.Log
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.ResolvingDataSource
@@ -35,7 +36,10 @@ object SubtitleCleaner {
 
     /** Data source that resolves novasub:// to a cleaned local file; everything else passes through. */
     fun factory(ctx: Context, http: OkHttpDataSource.Factory, client: OkHttpClient, headers: Map<String, String>) =
-        ResolvingDataSource.Factory(DefaultDataSource.Factory(ctx, http)) { spec: DataSpec ->
+        ResolvingDataSource.Factory(
+            // PNG-disguised video chunks are unwrapped before the HLS extractor sees them
+            DataSource.Factory { PngStripDataSource(DefaultDataSource.Factory(ctx, http).createDataSource()) }
+        ) { spec: DataSpec ->
             if (spec.uri.scheme != SCHEME) spec.withUri(StreamExtractor.unwrapProxy(spec.uri))   // also skip slow proxies
             else spec.withUri(Uri.fromFile(clean(ctx, spec.uri.getQueryParameter("u") ?: "", client, headers)))
         }

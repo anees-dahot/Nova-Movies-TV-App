@@ -91,6 +91,7 @@ class PlayerActivity : AppCompatActivity() {
     private var loudness: android.media.audiofx.LoudnessEnhancer? = null
     private var boost = 0
     private var audioPicked = false
+    private val dubTried = mutableSetOf<String>()
 
     private var streamJob: Job? = null
     private var tickJob: Job? = null
@@ -166,6 +167,7 @@ class PlayerActivity : AppCompatActivity() {
         season = s; episode = e
         providers = StreamExtractor.ordered()
         providerIndex = 0
+        dubTried.clear()
         introRange = null
         nextEpisode = null
         nextDismissed = false
@@ -253,6 +255,33 @@ class PlayerActivity : AppCompatActivity() {
         }
         jobs.forEach { it.cancel() }
         winner
+    }
+
+    /**
+     * The stream plays but lacks the preferred dub (e.g. VidLux has no Hindi for Loki):
+     * try the next multi-audio source once, from the same position. If none has it, remember that.
+     */
+    private fun huntDub(want: String) {
+        val current = providers.getOrNull(providerIndex) ?: return
+        dubTried += current.name
+        if (LocalStore.noDub(key(), want)) return
+        val next = providers.indices.firstOrNull { it != providerIndex && providers[it].multiAudio && providers[it].name !in dubTried }
+        val langName = com.anees.novatv.data.model.LangTags.name(want) ?: want
+        if (next == null) {
+            LocalStore.setNoDub(key(), want)
+            Log.i(TAG, "no $langName dub on any source")
+            return
+        }
+        dubTried += providers[next].name   // counted as tried even if it fails, so the search can't loop
+        Log.i(TAG, "$langName not on ${current.name}, trying ${providers[next].name}")
+        android.widget.Toast.makeText(this, "$langName not on ${current.name} — trying ${providers[next].name}…", android.widget.Toast.LENGTH_SHORT).show()
+        resumeMs = player?.currentPosition?.takeIf { it > 0 } ?: resumeMs
+        releasePlayer()
+        loadingLayer.alpha = 1f
+        loadingLayer.visibility = View.VISIBLE
+        providerIndex = next
+        streamJob?.cancel()
+        streamJob = lifecycleScope.launch { findSource() }
     }
 
     /** Player error / stall: re-sniff once if the link was cached, else move on. */
@@ -391,6 +420,7 @@ class PlayerActivity : AppCompatActivity() {
                         return
                     }
                 }
+                huntDub(want)
             }
         })
 
@@ -507,8 +537,10 @@ class PlayerActivity : AppCompatActivity() {
                 val showSkip = intro != null && pos in intro && pos < intro.last - 3000
                 if (showSkip && skipBtn.visibility != View.VISIBLE) {
                     skipBtn.text = if (card.type == MediaType.ANIME) "Skip Intro" else "▼  Skip Intro +85s"
+                    // Only real intro data (anime) takes focus; for series it's a hint you reach with ▼.
+                    // Non-focusable until then, or Android would hand it focus automatically.
+                    skipBtn.isFocusable = card.type == MediaType.ANIME
                     skipBtn.visibility = View.VISIBLE
-                    // Only real intro data (anime) takes focus; for series it's a hint you reach with ▼
                     if (card.type == MediaType.ANIME) skipBtn.requestFocus()
                 } else if (!showSkip && skipBtn.visibility == View.VISIBLE) skipBtn.visibility = View.GONE
 
@@ -586,7 +618,7 @@ class PlayerActivity : AppCompatActivity() {
             KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_INFO -> {
                 if (buttonFocused) return super.dispatchKeyEvent(event)
                 // ▼ jumps to a visible Skip / Next button first
-                listOf(skipBtn, nextBtn).firstOrNull { it.visibility == View.VISIBLE }?.let { it.requestFocus(); return true }
+                listOf(skipBtn, nextBtn).firstOrNull { it.visibility == View.VISIBLE }?.let { it.isFocusable = true; it.requestFocus(); return true }
                 showOverlay(6000, withInfo = true); return true
             }
         }

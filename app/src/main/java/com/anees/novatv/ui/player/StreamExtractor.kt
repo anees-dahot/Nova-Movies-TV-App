@@ -25,6 +25,11 @@ object StreamExtractor {
     val PROVIDERS = listOf(
         // Nov 2026 test: one HLS stream with many dubs (e.g. Inception: English, Hindi, Telugu, Arabic…), found in ~3s
         Provider("VidLux", { "https://vidlux.xyz/embed/movie/$it" }, { id, s, e -> "https://vidlux.xyz/embed/tv/$id/$s/$e" }, 20_000, multiAudio = true),
+        // Backup with real dubs (Nov 2026): Vidly had Hindi + 6 more on Loki where VidLux had no Hindi
+        Provider("Vidly", { "https://vidly.pro/movie/$it" }, { id, s, e -> "https://vidly.pro/tv/$id/$s/$e" }, 20_000, multiAudio = true),
+        // OllyEmbed (?server=2, Hindi + English) is found by the sniffer but doesn't start in ExoPlayer yet
+        // (PNG-wrapped chunks behind a worker proxy, see PngStripDataSource). Left out until that's solved:
+        // Provider("OllyEmbed", { "https://ollyembed.pages.dev/movie/$it?server=2" }, { id, s, e -> "https://ollyembed.pages.dev/tv/$id/$s/$e?server=2" }, 20_000, multiAudio = true),
         Provider("VidSrc", { "https://vidsrc.to/embed/movie/$it" }, { id, s, e -> "https://vidsrc.to/embed/tv/$id/$s/$e" }, 35_000),
         Provider("VidLink", { "https://vidlink.pro/movie/$it?autoplay=true" }, { id, s, e -> "https://vidlink.pro/tv/$id/$s/$e?autoplay=true" }),
         Provider("VidSrc CC", { "https://vidsrc.cc/v2/embed/movie/$it?autoPlay=true" }, { id, s, e -> "https://vidsrc.cc/v2/embed/tv/$id/$s/$e?autoPlay=true" }),

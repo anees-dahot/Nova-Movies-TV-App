@@ -73,6 +73,8 @@ class WebStreamSniffer(private val ctx: Context, private val host: FrameLayout) 
                     override fun shouldOverrideUrlLoading(view: WebView, req: WebResourceRequest): Boolean {
                         // Ads love to hijack the top frame; only allow the embed host there
                         val h = req.url.host ?: return true
+                        // Server redirects (a source moving domains) are fine; script-driven hops to ad sites aren't
+                        if (req.isRedirect) return false
                         return req.isForMainFrame && !h.endsWith(embedHost.removePrefix("www."))
                     }
 
