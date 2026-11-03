@@ -90,6 +90,7 @@ class PlayerActivity : AppCompatActivity() {
     private var originalModeId = 0
     private var loudness: android.media.audiofx.LoudnessEnhancer? = null
     private var boost = 0
+    private var audioPicked = false
 
     private var streamJob: Job? = null
     private var tickJob: Job? = null
@@ -339,6 +340,7 @@ class PlayerActivity : AppCompatActivity() {
             .setTrackSelector(selector)
             .build()
         player = exo
+        audioPicked = false
         playerView.player = exo
         applyTrackPrefs(exo)
         attachBoost(exo)
@@ -368,11 +370,27 @@ class PlayerActivity : AppCompatActivity() {
             }
             override fun onPlayerError(error: PlaybackException) = fallback(error.errorCodeName)
             override fun onTracksChanged(tracks: Tracks) {
+                val audio = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+                fun langOf(f: Format) = f.language?.take(2)?.takeIf { it != "un" } ?: com.anees.novatv.data.model.LangTags.code(f.label)
                 // Remember real audio languages so cards can be tagged "Hindi · English"
-                val langs = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
-                    .flatMap { g -> (0 until g.length).mapNotNull { g.getTrackFormat(it).language?.take(2) } }
-                    .filter { it != "un" }.distinct()
+                val langs = audio.flatMap { g -> (0 until g.length).mapNotNull { langOf(g.getTrackFormat(it)) } }.distinct()
                 if (langs.isNotEmpty()) LocalStore.setAudioLangs(key(), langs)
+
+                // Sources like VidLux name tracks ("Hindi") without a language code, so match by name once
+                if (audioPicked || audio.isEmpty()) return
+                audioPicked = true
+                val want = LocalStore.audioFor(key()) ?: settings.audioLang
+                if (want == "orig") return
+                val selected = audio.firstOrNull { it.isSelected }?.let { g -> (0 until g.length).firstOrNull { g.isTrackSelected(it) }?.let { langOf(g.getTrackFormat(it)) } }
+                if (selected == want) return
+                for (g in audio) for (i in 0 until g.length) {
+                    if (langOf(g.getTrackFormat(i)) == want) {
+                        exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
+                            .setOverrideForType(TrackSelectionOverride(g.mediaTrackGroup, i)).build()
+                        Log.i(TAG, "audio → ${g.getTrackFormat(i).label ?: want}")
+                        return
+                    }
+                }
             }
         })
 
@@ -612,7 +630,8 @@ class PlayerActivity : AppCompatActivity() {
                 items += ActionSheet.Item(trackName(f, "Track ${i + 1}"), checked = g.isTrackSelected(i)) {
                     exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
                         .setOverrideForType(TrackSelectionOverride(g.mediaTrackGroup, i)).build()
-                    f.language?.let { LocalStore.setAudioFor(key(), it) }   // remembered for the next episode
+                    (f.language?.take(2)?.takeIf { it != "un" } ?: com.anees.novatv.data.model.LangTags.code(f.label))
+                        ?.let { LocalStore.setAudioFor(key(), it) }   // remembered for the next episode
                 }
             }
         }

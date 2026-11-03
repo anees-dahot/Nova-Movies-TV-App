@@ -201,6 +201,12 @@ object LangTags {
         "ta" to "Tamil", "te" to "Telugu", "ml" to "Malayalam", "kn" to "Kannada", "bn" to "Bengali", "pa" to "Punjabi",
         "zh" to "Chinese", "es" to "Spanish", "fr" to "French", "de" to "German", "it" to "Italian", "tr" to "Turkish", "ar" to "Arabic")
 
+    /** "Hindi" / "Hindi Dubbed" / "English, Japanese" → "hi" / "hi" / "en" (sources often name tracks without a code). */
+    fun code(label: String?): String? {
+        val l = label?.lowercase() ?: return null
+        return NAMES.entries.firstOrNull { l.startsWith(it.value.lowercase()) || l.contains(it.value.lowercase()) }?.key
+    }
+
     fun name(code: String?): String? = code?.let { NAMES[it.take(2).lowercase()] ?: java.util.Locale(it).displayLanguage.takeIf { n -> n.isNotBlank() && n != it } }
 
     fun label(card: MediaCard, learned: List<String>?): String? {
